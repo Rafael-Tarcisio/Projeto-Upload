@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- CH340 (comum em clones de Nano/Uno) -->
+    <usb-device vendor-id="6790" product-id="29987" /> <!-- 0x1A86 / 0x7523 -->
+
+    <!-- FTDI FT232 (alguns Nano antigos) -->
+    <usb-device vendor-id="1027" product-id="24577" /> <!-- 0x0403 / 0x6001 -->
+
+    <!-- ATmega16u2 do Uno R3 original -->
+    <usb-device vendor-id="9025" product-id="67" />   <!-- 0x2341 / 0x0043 -->
+    <usb-device vendor-id="9025" product-id="1" />    <!-- 0x2341 / 0x0001 -->
+</resources>
