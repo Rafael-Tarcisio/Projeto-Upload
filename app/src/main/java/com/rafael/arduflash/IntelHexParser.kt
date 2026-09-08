@@ -10,7 +10,7 @@ data class HexRecord(val address: Int, val data: ByteArray)
  * Parser simples de Intel HEX (formato padrão de saída do avr-gcc/Arduino IDE).
  *
  * Cada linha segue o formato:
- *   :LLAAAATT[DD...]CC
+ *  `:LLAAAATT[DD...]CC`
  *   LL   = tamanho dos dados (1 byte, hex)
  *   AAAA = endereço (2 bytes, hex)
  *   TT   = tipo do registro (00=dados, 01=EOF, 04=endereço estendido)
