@@ -2,15 +2,15 @@ package com.rafael.arduflash
 
 /**
  * Representa um trecho contíguo de bytes já decodificado, pronto pra ser
- * gravado a partir de [address].
+ * gravado a partir do endereço indicado em "address".
  */
 data class HexRecord(val address: Int, val data: ByteArray)
 
 /**
  * Parser simples de Intel HEX (formato padrão de saída do avr-gcc/Arduino IDE).
  *
- * Cada linha segue o formato:
- *  `:LLAAAATT[DD...]CC`
+ * Cada linha segue o formato ":LLAAAATTDD...CC", por exemplo:
+ *   :10 0000 00 0C9469000C946A000C946A00... 7A
  *   LL   = tamanho dos dados (1 byte, hex)
  *   AAAA = endereço (2 bytes, hex)
  *   TT   = tipo do registro (00=dados, 01=EOF, 04=endereço estendido)
