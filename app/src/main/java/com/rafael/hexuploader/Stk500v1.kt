@@ -129,7 +129,7 @@ class Stk500v1(private val port: UsbSerialPort, private val pageSize: Int = 128)
                 System.arraycopy(chunk, 0, buffer, read, got)
                 read += got
             }
-            if (System.currentTimeMillis() > deadline) {
+            if (read < n && System.currentTimeMillis() > deadline) {
                 throw IOException("Timeout esperando resposta do bootloader ($read/$n bytes)")
             }
         }
