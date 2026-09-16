@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="baud_rates">
+        <item>115200</item>
+        <item>57600</item>
+        <item>38400</item>
+        <item>19200</item>
+        <item>9600</item>
+    </string-array>
+
+    <string-array name="line_terminators">
+        <item>Nenhum</item>
+        <item>\n (LF)</item>
+        <item>\r\n (CRLF)</item>
+    </string-array>
+</resources>
