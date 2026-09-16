@@ -38,7 +38,7 @@ object IntelHexParser {
 
                 // byteCount precisa bater com o tamanho real do payload de dados,
                 // senão os índices de "bytes[4 + i]" abaixo estourariam o array.
-                if (bytes.size != MIN_RECORD_BYTES - 1 + byteCount) {
+                if (bytes.size != MIN_RECORD_BYTES + byteCount) {
                     throw HexParseException("Tamanho de registro inconsistente na linha: $line")
                 }
 
