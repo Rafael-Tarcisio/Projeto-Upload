@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Cor de fundo do ícone adaptativo, referenciada em
+         mipmap-anydpi-v26/ic_launcher.xml. Sem ela o build quebra
+         com "resource color/ic_launcher_background not found". -->
+    <color name="ic_launcher_background">#1976D2</color>
+</resources>
