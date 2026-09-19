@@ -43,8 +43,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
 
     private var selectedHexText: String? = null
+    private var selectedHexUri: Uri? = null
     private var monitor: SerialMonitor? = null
     private var monitorPort: UsbSerialPort? = null
+    @Volatile private var isUploading: Boolean = false
     private val ACTION_USB_PERMISSION = "com.rafael.hexuploader.USB_PERMISSION"
     private val ACTION_USB_PERMISSION_MONITOR = "com.rafael.hexuploader.USB_PERMISSION_MONITOR"
 
@@ -83,6 +85,13 @@ class MainActivity : AppCompatActivity() {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> refreshConnectionStatus()
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                    // Uma desconexão do próprio SO (sem o usuário tirar o
+                    // cabo manualmente) costuma indicar queda de energia —
+                    // no Uno, se a tensão cair o bastante, até o chip
+                    // USB-serial (ATmega16u2) reinicia e some do barramento.
+                    if (monitor != null || isUploading) {
+                        setStatus("🔌 Dispositivo desconectado inesperadamente (possível queda de energia).")
+                    }
                     closeMonitor()
                     refreshConnectionStatus()
                 }
@@ -165,6 +174,9 @@ class MainActivity : AppCompatActivity() {
 
         refreshConnectionStatus()
         handleIncomingIntent(intent)
+        // Só tenta restaurar o último .hex se nenhum arquivo já chegou via
+        // intent (ex: app aberto por "Abrir com" outro .hex).
+        if (selectedHexText == null) restoreLastHexFile()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -220,18 +232,44 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadHexFile(uri: Uri) {
+    private fun loadHexFile(uri: Uri, isAutoRestore: Boolean = false) {
         try {
             contentResolver.openInputStream(uri)?.use { stream ->
                 val text = BufferedReader(InputStreamReader(stream)).readText()
                 selectedHexText = text
+                selectedHexUri = uri
                 txtFileName.text = uri.lastPathSegment ?: "arquivo selecionado"
                 btnUpload.isEnabled = true
-                setStatus("Arquivo carregado. Pronto para gravar.")
+                setStatus(if (isAutoRestore) "Último arquivo .hex usado, carregado automaticamente." else "Arquivo carregado. Pronto para gravar.")
+
+                if (!isAutoRestore) {
+                    // Pede permissão persistível pra poder reabrir esse mesmo
+                    // arquivo depois que o app for fechado e aberto de novo
+                    // (útil pois é sempre o mesmo .hex que é gravado).
+                    try {
+                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    } catch (_: SecurityException) {
+                        // Nem todo provedor de arquivos permite isso — sem problema,
+                        // só não vai dar pra restaurar automaticamente da próxima vez.
+                    }
+                    prefs.edit().putString("last_hex_uri", uri.toString()).apply()
+                }
             }
         } catch (e: Exception) {
-            setStatus("Erro ao ler o arquivo: ${e.message}")
+            if (isAutoRestore) {
+                // Arquivo/permissão pode ter sumido entre uma abertura e outra do
+                // app — ignora silenciosamente e deixa o usuário escolher de novo.
+                prefs.edit().remove("last_hex_uri").apply()
+            } else {
+                setStatus("Erro ao ler o arquivo: ${e.message}")
+            }
         }
+    }
+
+    /** Tenta recarregar o último .hex usado, se o app já tiver permissão salva pra ele. */
+    private fun restoreLastHexFile() {
+        val saved = prefs.getString("last_hex_uri", null) ?: return
+        loadHexFile(Uri.parse(saved), isAutoRestore = true)
     }
 
     private fun findDriver(): UsbSerialDriver? {
@@ -274,6 +312,7 @@ class MainActivity : AppCompatActivity() {
         progressBar.progress = 0
         setStatus("Analisando arquivo .hex...")
 
+        isUploading = true
         Thread {
             var port: UsbSerialPort? = null
             try {
@@ -362,7 +401,7 @@ class MainActivity : AppCompatActivity() {
                 stk.writeFlash(memory) { page, total ->
                     runOnUiThread {
                         progressBar.progress = (page * 100) / total
-                        setStatus("Gravando página $page de $total...")
+                        setStatus("Gravando e verificando página $page de $total...")
                     }
                 }
 
@@ -370,7 +409,13 @@ class MainActivity : AppCompatActivity() {
                 port.close()
 
                 runOnUiThread {
-                    setStatus("Gravação concluída com sucesso!")
+                    setStatus("Gravação concluída e verificada com sucesso!")
+                    btnUpload.isEnabled = true
+                }
+            } catch (e: Stk500v1.ChipResetException) {
+                try { port?.close() } catch (_: Exception) {}
+                runOnUiThread {
+                    setStatus("⚠️ ${e.message}")
                     btnUpload.isEnabled = true
                 }
             } catch (e: Exception) {
@@ -379,6 +424,8 @@ class MainActivity : AppCompatActivity() {
                     setStatus("Erro: ${e.message}")
                     btnUpload.isEnabled = true
                 }
+            } finally {
+                isUploading = false
             }
         }.start()
     }

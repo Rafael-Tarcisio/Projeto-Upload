@@ -9,7 +9,7 @@ import java.io.IOException
  *
  * Referência dos bytes de comando: mesma tabela usada pelo avrdude
  * (arquivo stk500.c), reduzida ao subconjunto necessário para gravar
- * a flash de um ATmega328P/32u4.
+ * e verificar a flash de um ATmega328P/32u4.
  */
 class Stk500v1(private val port: UsbSerialPort, private val pageSize: Int = 128) {
 
@@ -22,12 +22,23 @@ class Stk500v1(private val port: UsbSerialPort, private val pageSize: Int = 128)
         private const val STK_LEAVE_PROGMODE = 0x51
         private const val STK_LOAD_ADDRESS = 0x55
         private const val STK_PROG_PAGE = 0x64
+        private const val STK_READ_PAGE = 0x74
         private const val STK_READ_SIGN = 0x75
 
         private const val READ_TIMEOUT_MS = 1000
+
+        /** Tentativas por página (gravação e verificação) antes de desistir. */
+        private const val MAX_PAGE_ATTEMPTS = 3
     }
 
     class ProtocolException(message: String) : Exception(message)
+
+    /**
+     * Erro específico para quando tudo indica que o chip reiniciou no meio
+     * da gravação (queda de energia, brownout) — em vez de um erro genérico
+     * de protocolo, dá pra mostrar uma mensagem que explica a causa provável.
+     */
+    class ChipResetException(message: String) : Exception(message)
 
     /** Lê os 3 bytes de assinatura do chip (ex: 1E 95 0F = ATmega328P). */
     fun readSignature(): ByteArray {
@@ -67,8 +78,16 @@ class Stk500v1(private val port: UsbSerialPort, private val pageSize: Int = 128)
         expectOk()
     }
 
-    /** Grava toda a memória (já linearizada pelo IntelHexParser), página por página. */
-    fun writeFlash(memory: ByteArray, onProgress: (Int, Int) -> Unit) {
+    /**
+     * Grava toda a memória (já linearizada pelo IntelHexParser), página por
+     * página — com verificação (readback) e retry automático em cada uma.
+     *
+     * Cada página é sempre enviada com o tamanho cheio (`pageSize`),
+     * preenchendo o que sobrar com 0xFF (valor de flash apagada). Isso evita
+     * mandar a última página com tamanho "quebrado", que alguns bootloaders
+     * tratam mal, e mantém o endereço sempre alinhado em `pageSize/2` words.
+     */
+    fun writeFlash(memory: ByteArray, verify: Boolean = true, onProgress: (Int, Int) -> Unit) {
         var address = 0 // endereço em WORDS (2 bytes), como o protocolo espera
         var offset = 0
         val totalPages = (memory.size + pageSize - 1) / pageSize
@@ -76,16 +95,94 @@ class Stk500v1(private val port: UsbSerialPort, private val pageSize: Int = 128)
 
         while (offset < memory.size) {
             val chunkSize = minOf(pageSize, memory.size - offset)
-            val page = memory.copyOfRange(offset, offset + chunkSize)
+            val page = ByteArray(pageSize) { 0xFF.toByte() }
+            System.arraycopy(memory, offset, page, 0, chunkSize)
 
-            loadAddress(address)
-            progPage(page)
+            pageIndex++
+            writePageWithRetry(address, page, pageIndex)
+            if (verify) verifyPageWithRetry(address, page, pageIndex)
 
             offset += chunkSize
-            address += chunkSize / 2
-            pageIndex++
+            address += pageSize / 2
             onProgress(pageIndex, totalPages)
         }
+    }
+
+    private fun writePageWithRetry(address: Int, page: ByteArray, pageNumber: Int) {
+        var lastError: Exception? = null
+        repeat(MAX_PAGE_ATTEMPTS) { attempt ->
+            try {
+                loadAddress(address)
+                progPage(page)
+                return
+            } catch (e: Exception) {
+                lastError = e
+                recoverIfLooksLikeReset(e, attempt)
+            }
+        }
+        throw ChipResetException(
+            "Falha ao gravar a página $pageNumber após $MAX_PAGE_ATTEMPTS tentativas " +
+                "(${lastError?.message}). Isso costuma acontecer quando o Arduino reinicia " +
+                "no meio da gravação por falta de energia — tente uma fonte externa."
+        )
+    }
+
+    private fun verifyPageWithRetry(address: Int, expected: ByteArray, pageNumber: Int) {
+        var lastError: Exception? = null
+        repeat(MAX_PAGE_ATTEMPTS) { attempt ->
+            try {
+                val actual = readPage(address, expected.size)
+                if (actual.contentEquals(expected)) return
+                lastError = ProtocolException("dados lidos de volta não conferem com o que foi gravado")
+            } catch (e: Exception) {
+                lastError = e
+                recoverIfLooksLikeReset(e, attempt)
+            }
+        }
+        throw ChipResetException(
+            "Falha ao verificar a página $pageNumber após $MAX_PAGE_ATTEMPTS tentativas " +
+                "(${lastError?.message}). A gravação pode estar incompleta — verifique a " +
+                "alimentação do Arduino e tente novamente."
+        )
+    }
+
+    /**
+     * Depois de um erro de protocolo/timeout, tenta ressincronizar e voltar
+     * a modo de programação antes da próxima tentativa — necessário porque,
+     * se o chip de fato reiniciou, ele volta pro estado "esperando sync" e
+     * qualquer comando anterior a isso vai falhar de novo sem essa etapa.
+     * Ignorado silenciosamente se falhar: a tentativa seguinte vai reportar
+     * o erro real.
+     */
+    private fun recoverIfLooksLikeReset(e: Exception, attempt: Int) {
+        if (attempt >= MAX_PAGE_ATTEMPTS - 1) return // última tentativa, não vale a pena
+        try {
+            sync()
+            enterProgMode()
+        } catch (_: Exception) {
+            // segue pra próxima tentativa mesmo assim; se o bootloader
+            // realmente sumiu, o próximo loadAddress/progPage vai falhar
+            // de novo e o erro será reportado no fim.
+        }
+    }
+
+    private fun readPage(wordAddress: Int, length: Int): ByteArray {
+        loadAddress(wordAddress)
+        val lenHigh = (length shr 8) and 0xFF
+        val lenLow = length and 0xFF
+        send(
+            byteArrayOf(
+                STK_READ_PAGE.toByte(), lenHigh.toByte(), lenLow.toByte(),
+                'F'.code.toByte(), CRC_EOP.toByte()
+            )
+        )
+        val resp = readExact(length + 2)
+        val inSync = resp[0].toInt() and 0xFF
+        val ok = resp[resp.size - 1].toInt() and 0xFF
+        if (inSync != STK_INSYNC || ok != STK_OK) {
+            throw ProtocolException("Resposta inesperada ao ler página de volta para verificação")
+        }
+        return resp.copyOfRange(1, resp.size - 1)
     }
 
     private fun loadAddress(wordAddress: Int) {
